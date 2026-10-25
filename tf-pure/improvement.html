@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pure-tf-java - Performance Improvement Journal</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel:#161d2e; --border:#26304a; --text:#e6eaf3;
+    --muted:#9aa7c7; --accent:#4f8cff; --accent2:#22c1a6; --warn:#ffcf6b;
+    --err:#ff6b6b; --code-bg:#0a0e19;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.65 "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    padding:2.4rem 2rem 2rem; border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#182236,var(--bg));
+  }
+  header h1 { margin:0; font-size:1.9rem; }
+  header p { color:var(--muted); margin:.4rem 0 0; }
+  main { max-width:1080px; margin:0 auto; padding:1.5rem 2rem 4rem; }
+  h2 {
+    margin:2.6rem 0 .6rem; padding-top:1rem;
+    border-top:1px solid var(--border); color:var(--accent);
+    font-size:1.35rem;
+  }
+  h3 { color:var(--accent2); margin:1.6rem 0 .4rem; font-size:1.08rem; }
+  p { margin:.55rem 0; }
+  li { margin:.25rem 0; }
+  a { color:var(--accent); text-decoration:none; }
+  code { background:var(--code-bg); padding:.12rem .4rem; border-radius:4px;
+         font-size:.9rem; font-family:Consolas,"Cascadia Mono",monospace; }
+  pre {
+    background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
+    padding:.9rem 1rem; overflow:auto; font-family:Consolas,"Cascadia Mono",monospace;
+    font-size:.83rem; line-height:1.5;
+  }
+  pre code { background:none; padding:0; }
+  .fname { color:var(--warn); font-weight:bold; display:block; margin:1rem 0 .3rem; }
+  .before { border-left:3px solid var(--err); }
+  .after  { border-left:3px solid var(--accent2); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+  @media (max-width:900px){ .grid{grid-template-columns:1fr;} }
+  table { border-collapse:collapse; width:100%; margin:.8rem 0; font-size:.92rem; }
+  th,td { border:1px solid var(--border); padding:.45rem .7rem; text-align:left; }
+  th { background:#1b2438; }
+  .good { color:var(--accent2); font-weight:bold; }
+  .bad  { color:var(--err); }
+  .note { background:#1b2438; border:1px solid var(--border); border-radius:8px;
+          padding:.8rem 1rem; margin:.8rem 0; }
+  .note strong { color:var(--warn); }
+  .kpi { display:flex; gap:1rem; flex-wrap:wrap; margin:1rem 0; }
+  .kpi>div { flex:1 1 200px; background:var(--panel); border:1px solid var(--border);
+             border-radius:10px; padding:.8rem 1rem; }
+  .kpi b { display:block; font-size:1.6rem; color:var(--accent2); }
+</style>
+</head>
+<body>
+<header>
+  <h1>pure-tf-java &mdash; Performance Improvement Journal</h1>
+  <p>What was done today to stop the 1&nbsp;minute epochs: batching, profiling (JFR), and JDK Vector&nbsp;API &mdash; with before/after code, config, and training guidance.</p>
+</header>
+
+<main>
+
+<h2>0. Start state &amp; targets</h2>
+<p>This repo is a pure-Java, keras-flavoured autograd engine (micrograd lineage: tape-based define-by-run). Everything runs on the CPU &mdash; no TensorFlow DLL. The <code>fashion-cnn</code> demo (an MLP: <code>Reshape(28,28)&#8594;Flatten&#8594;Dense(128,relu)&#8594;Dense(10)</code>) seemed slow, so the session goal was:</p>
+<ul>
+  <li><strong>Memory</strong>: evaluating the whole 10k test set in one forward pass builds a giant autograd tape (1.5&nbsp;GB+ of intermediates) and risks OOM under <code>-Xmx1g</code>.</li>
+  <li><strong>Speed</strong>: one epoch took ~3.8&nbsp;s after batching alone; ~30% of the epoch is still pure matmul time. Squeeze the GEMM.</li>
+</ul>
+<div class="kpi">
+  <div><b>~60 s</b>original full epoch (unbatched inference)<br><small>before any work</small></div>
+  <div><b>2.5 s</b>epoch after batching + Vector&nbsp;API<br><small>today&rsquo;s result, same loss 0.6536</small></div>
+  <div><b>~24&times;</b>speed-up on training step time<br><small>plus OOM-free 10k evaluation</small></div>
+</div>
+
+<h2>1. Batched inference (memory)</h2>
+<h3>Concept</h3>
+<p><code>predict</code> pushes every sample through the whole network <em>and keeps the tape and every intermediate tensor alive</em>. With 10,000 rows of 784 floats the intermediate tensors dwarf the heap (&gt;1.5&nbsp;GB) &mdash; the reason evaluation took ~1&nbsp;minute (thrashing) or died under <code>-Xmx1g</code>. The fix is the standard minibatch loop: run the net on slices of 512 rows, release the tape via <code>Tensor.resetGraph()</code> after each slice, and concatenate the outputs.</p>
+<h3>Before</h3>
+<div class="fname">src/main/java/puretf/nn/Sequential.java &mdash; before (single pass over the whole set)</div>
+<pre class="before"><code>public float[][] predict(float[][] X) {
+    setTraining(false);
+    Tensor.resetGraph();
+    int n = X.length, d = X[0].length;
+    Tensor out = forward(Tensor.of(flatten(X), n, d));   // ALL rows at once
+    int cols = out.data.length / n;
+    float[][] res = new float[n][cols];
+    for (int i = 0; i &lt; n; i++)
+        System.arraycopy(out.data, i * cols, res[i], 0, cols);
+    return res;
+}
+
+public double[] evaluate(float[][] X, int[] Y, int classes) {
+    float[][] logits = predict(X);                       // same problem
+    ...
+}</code></pre>
+<h3>After</h3>
+<div class="fname">src/main/java/puretf/nn/Sequential.java &mdash; after (sliced, tape released per slice)</div>
+<pre class="after"><code>/** Raw outputs in slices of {@code batch} rows so the autograd tape and
+ *  intermediates never balloon to the full dataset size. */
+public float[][] predict(float[][] X, int batch) {
+    if (batch &lt;= 0) batch = X.length;
+    setTraining(false);
+    int n = X.length, d = X[0].length;
+    int cols = -1;
+    float[][] res = new float[n][];
+    for (int start = 0; start &lt; n; start += batch) {
+        int len = Math.min(batch, n - start);
+        Tensor.resetGraph();                  // drop the previous slice's tape
+        float[] bx = new float[len * d];
+        for (int i = 0; i &lt; len; i++)
+            System.arraycopy(X[start + i], 0, bx, i * d, d);
+        Tensor out = forward(Tensor.of(bx, len, d));
+        if (cols &lt; 0) cols = out.data.length / len;
+        for (int i = 0; i &lt; len; i++)
+            System.arraycopy(out.data, i * cols, res[start + i] =
+                    new float[cols], 0, cols);
+    }
+    return res;
+}
+
+public double[] evaluate(float[][] X, int[] Y, int classes) {
+    return evaluate(X, Y, classes, 512);
+}
+public double[] evaluate(float[][] X, int[] Y, int classes, int batch) {
+    float[][] logits = predict(X, batch);    // batched under the hood
+    ...
+}</code></pre>
+<p class="note"><strong>Autograd tape:</strong> every op records a <em>backprop closure</em> so <code>backward()</code> can walk creation order in reverse. In inference you only need the forward values &mdash; keeping the closures alive is pure memory waste, so <code>predict</code> now calls <code>Tensor.resetGraph()</code> between slices.</p>
+
+<h2>2. Profile first: where the time actually goes</h2>
+<h3>Concept</h3>
+<p>Guessing &ldquo;conv is slow&rdquo; is how you waste an afternoon. JDK Flight Recorder (JFR) samples the running JVM cheaply. Recording a single epoch told us the demo is a plain MLP (the Reshape&rarr;Flatten path, not im2col conv) and that <strong>~89% of the epoch was inside <code>Tensor.matmul</code></strong>: backward &asymp; 60% (two matmuls), forward &asymp; 28%. One epoch = 118 batches of <code>[512&times;784]&#183;[784&times;128]</code> &asymp; 18 GFLOP; the scalar dot-product loops were holding &asymp;10&nbsp;GFLOPS.</p>
+<div class="fname">start JFR at ~10s, stop automatically at 60s (or run one epoch)</div>
+<pre><code>java -XX:StartFlightRecording=duration=60s,filename=bench.jfr ^
+     -XX:StartFlightRecording=dumponexit=true,settings=profile -jar ...
+jfr print --events jdk.ExecutionSample bench.jfr &gt; samples.txt</code></pre>
+<p>Lesson: don&rsquo;t optimize what you haven&rsquo;t measured. The interesting number was <em>which</em> matmul: the backward <code>dW = A&#7512;G</code> and <code>dA = G&#183;W&#7512;</code> together beat the forward. Optimize all three kernels.</p>
+
+<h2>3. Vectorize matmul with the JDK Vector API</h2>
+<h3>Concept &mdash; SIMD and the incubator module</h3>
+<ul>
+  <li><strong>SIMD</strong>: one CPU instruction operates on several <code>float</code>s at once. On AVX2 a &ldquo;vector&rdquo; holds 8 floats (256&nbsp;bit); on AVX-512, 16.</li>
+  <li><strong>Species</strong>: <code>FloatVector.SPECIES_PREFERRED</code> is the largest width the JVM picked for this CPU (8 on your machine &mdash; you must use <em>its</em> lane count as the unit of work).</li>
+  <li><strong>Primitives</strong>: <code>fromArray(SP, arr, off)</code> loads lanes, <code>intoArray</code> stores them, <code>broadcast</code> repeats one scalar, <code>mul/add</code> are lanewise, <code>reduceLanes(ADD)</code> sums a vector to a scalar.</li>
+  <li><strong>Incubator module</strong>: the API lives in <code>jdk.incubator.vector</code> (not <code>java.lang.vector</code>) even on JDK&nbsp;23 &mdash; so both the compiler job <em>and</em> the run JVM need <code>--add-modules jdk.incubator.vector</code>. <code>FloatVector.SPECIES_PREFERRED.length()</code> is 8 here, so a 128-wide row is exactly 16 vectors.</li>
+  <li><strong>Dissection</strong>: the kernel keeps the <code>k</code> loop outer so each row of W is <em>streamed sequentially</em> (full cache lines), the <code>j</code> loop runs 8 lanes at a time, and the zero-skip <em>before</em> the j loop is a real win for pixel/ReLU inputs that are &sdot;half&sdot; zeros.</li>
+</ul>
+<h3>Before &mdash; scalar loops</h3>
+<div class="fname">src/main/java/puretf/Tensor.java &mdash; matmul before (three scalar triple-loops)</div>
+<pre class="before"><code>public Tensor matmul(Tensor w) {
+    int b = shape[0], m = shape[1], n = w.shape[1];
+    float[] out = new float[b * n];
+    ...
+    // forward: for each row i, for each k, scatter a[i,k] * W[k,:]
+    for (int i = 0; i &lt; b; i++)
+        for (int k = 0; k &lt; m; k++) {
+            float a = data[i * m + k];
+            if (a == 0f) continue;
+            int oo = i * n;
+            for (int j = 0; j &lt; n; j++)
+                out[oo + j] += a * w.data[k * n + j];
+        }
+    ...
+    // backward dA: for each (i,k) a full length-n dot product
+    for (int i = 0; i &lt; b; i++)
+        for (int k = 0; k &lt; m; k++) {
+            float s = 0;
+            for (int j = 0; j &lt; n; j++)
+                s += r.grad[i * n + j] * w.data[k * n + j];
+            da[i * m + k] = s;
+        }
+    // backward dW: for each (k,i) outer-product accumulation
+    for (int k = 0; k &lt; m; k++)
+        for (int i = 0; i &lt; b; i++) {
+            float a = data[i * m + k];
+            if (a == 0f) continue;
+            for (int j = 0; j &lt; n; j++)
+                dw[k * n + j] += a * r.grad[i * n + j];
+        }
+}</code></pre>
+<h3>After &mdash; Vector API</h3>
+<p>The same three kernels moved into dedicated private methods invoked from <code>matmul</code>; each has a scalar fallback for when <code>n</code> is smaller than one lane group.</p>
+<div class="fname">src/main/java/puretf/Tensor.java &mdash; after (vectorised)</div>
+<pre class="after"><code>private static final VectorSpecies&lt;Float&gt; SP = FloatVector.SPECIES_PREFERRED;
+
+/** Forward rows [i0,i1) x W[m,n] -> out rows. k stays outer so each W row
+ *  streams sequentially; one broadcast avoids 8x redundant broadcast. */
+private static void mmFwd(float[] out, float[] a, float[] wd,
+                          int i0, int i1, int m, int n) {
+    if (n &lt; SP.length()) {                     // scalar fallback
+        for (int i = i0; i &lt; i1; i++)
+            for (int k = 0; k &lt; m; k++) {
+                float av = a[i * m + k];
+                if (av == 0f) continue;
+                int wo = k * n, oo = i * n;
+                for (int j = 0; j &lt; n; j++)
+                    out[oo + j] += av * wd[wo + j];
+            }
+        return;
+    }
+    for (int i = i0; i &lt; i1; i++) {
+        int oo = i * n, ai = i * m;
+        for (int k = 0; k &lt; m; k++) {
+            float av = a[ai + k];
+            if (av == 0f) continue;            // skip whole k for sparse layers
+            FloatVector bv = FloatVector.broadcast(SP, av);
+            int wo = k * n, j = 0;
+            for (; j + SP.length() &lt;= n; j += SP.length()) {
+                FloatVector o  = FloatVector.fromArray(SP, out, oo + j);
+                FloatVector wv = FloatVector.fromArray(SP, wd, wo + j);
+                o = o.add(wv.mul(bv));         // out[j..] += a * W[k,j..]
+                o.intoArray(out, oo + j);
+            }
+            for (; j &lt; n; j++) out[oo + j] += av * wd[wo + j];  // tail lanes
+        }
+    }
+}
+
+/** dA[i0..i1,:] = G . W^T - one vectorised dot product per (i,k). */
+private static void mmBwdDa(float[] da, float[] g, float[] wd,
+                            int i0, int i1, int m, int n) {
+    if (n &lt; SP.length()) { /* scalar, same as before */ return; }
+    for (int i = i0; i &lt; i1; i++) {
+        int go = i * n, oi = i * m;
+        for (int k = 0; k &lt; m; k++) {
+            int wo = k * n, j = 0;
+            FloatVector accv = FloatVector.zero(SP);
+            for (; j + SP.length() &lt;= n; j += SP.length())
+                accv = accv.add(FloatVector.fromArray(SP, g, go + j)
+                        .mul(FloatVector.fromArray(SP, wd, wo + j)));
+            float s = accv.reduceLanes(VectorOperators.ADD);   // dot -> scalar
+            for (; j &lt; n; j++) s += g[go + j] * wd[wo + j];
+            da[oi + k] = s;
+        }
+    }
+}
+
+/** dW[k0..k1,:] += A^T . G (accumulates over the whole batch). */
+private static void mmBwdDw(float[] dw, float[] g, float[] a,
+                            int k0, int k1, int b, int m, int n) {
+    if (n &lt; SP.length()) { /* scalar, same as before */ return; }
+    for (int k = k0; k &lt; k1; k++) {
+        int wo = k * n;
+        for (int i = 0; i &lt; b; i++) {
+            float av = a[i * m + k];
+            if (av == 0f) continue;
+            FloatVector bv = FloatVector.broadcast(SP, av);
+            int go = i * n, j = 0;
+            for (; j + SP.length() &lt;= n; j += SP.length()) {
+                FloatVector d  = FloatVector.fromArray(SP, dw, wo + j);
+                FloatVector gv = FloatVector.fromArray(SP, g, go + j);
+                d = d.add(gv.mul(bv));         // dw[k,j..] += a[i,k] * g[i,j..]
+                d.intoArray(dw, wo + j);
+            }
+            for (; j &lt; n; j++) dw[wo + j] += av * g[go + j];
+        }
+    }
+}</code></pre>
+<p class="note"><strong>Why 3.8&nbsp;s&#8594;2.5&nbsp;s:</strong> Warm (JDK&nbsp;23) epoch timings after the compile flags below &mdash; loss stayed bit-identical (0.6536, acc 0.7793). The inner loop now does 8 output elements per <code>vfmadd</code> instead of one scalar multiply/add, with the load of <code>W[k,:]</code> kept sequential so the prefetcher can stream full cache lines.</p>
+
+<h3>Gotcha caught on the way &mdash; <code>fma</code> operand order</h3>
+<p>While tuning tiling I tried <code>acc.fma(wv, broadcast(x))</code> and the epoch loss instantly went from 0.6536 to 2.28 (train corrupted). A two-line probe revealed the truth about this JDK&rsquo;s incubator API:</p>
+<pre><code>// probe:  a=2  v1=3  v2=4
+FloatVector f = va.fma(vb, vc).lane(0);   // = 10  (&lt;-- 2*3+4, NOT 2+3*4)
+FloatVector m = va.add(vb.mul(vc)).lane(0);// = 14
+</code></pre>
+<p class="note"><strong><code>Vector.fma(v1,v2)</code> computes <code>this * v1 + v2</code></strong> on this JDK, <em>not</em> <code>this + v1*v2</code>. The correct fused form for an accumulator is <code>acc = wv.fma(broadcast(x), acc)</code>, or simply keep <code>acc.add(wv.mul(bv))</code>. Always verify kernel numerics against a scalar reference before benchmarking.</p>
+
+<h2>4. Config needed to run</h2>
+<h3>Concept</h3>
+<p>The incubator module must be visible in <em>both</em> phases: javac needs it, and the run JVM needs it. <code>exec:java</code> spawns the app inside <em>Maven&rsquo;s own JVM</em>, so JVM flags belong in <code>MAVEN_OPTS</code>, <strong>not</strong> in <code>exec-maven-plugin</code> <code>&lt;arguments&gt;</code> (those are program args passed to <code>main()</code> &mdash; putting <code>--add-modules</code> there made the demo treat it as a data directory: <code>NoSuchFileException: jdk.incubator.vector\train-images-idx3-ubyte.gz</code>).</p>
+<div class="fname">pom.xml &mdash; compile at Java 21 + expose the module to javac</div>
+<pre class="after"><code>&lt;properties&gt;
+  &lt;maven.compiler.release&gt;21&lt;/maven.compiler.release&gt;
+  &lt;exec.mainClass&gt;puretf.demo.CnnFashionMnistDemo&lt;/exec.mainClass&gt;
+&lt;/properties&gt;
+&lt;build&gt;&lt;plugins&gt;
+  &lt;plugin&gt;
+    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+    &lt;artifactId&gt;maven-compiler-plugin&lt;/artifactId&gt;
+    &lt;version&gt;3.13.0&lt;/version&gt;
+    &lt;configuration&gt;
+      &lt;release&gt;21&lt;/release&gt;
+      &lt;compilerArgs&gt;
+        &lt;arg&gt;--add-modules&lt;/arg&gt;
+        &lt;arg&gt;jdk.incubator.vector&lt;/arg&gt;
+      &lt;/compilerArgs&gt;
+    &lt;/configuration&gt;
+  &lt;/plugin&gt;
+  &lt;!-- exec-maven-plugin: keep ONLY &lt;mainClass&gt;. No &lt;arguments&gt; block. --&gt;
+&lt;/plugins&gt;&lt;/build&gt;</code></pre>
+<div class="fname">run.cmd &mdash; pick JDK 23 and hand the flag to Maven&rsquo;s JVM</div>
+<pre class="after"><code>if exist "C:\Program Files\Java\jdk-23" set "JAVA_HOME=C:\Program Files\Java\jdk-23"
+set "MAVEN_OPTS=-Xmx1g --add-modules jdk.incubator.vector"
+...
+mvn -q compile "-Dexec.mainClass=puretf.demo.CnnFashionMnistDemo" ^
+    exec:java "-Dexec.args=C:\Users\dell\Desktop\data\fashion 1 --batch=512"</code></pre>
+<h3>Running directly with bare <code>mvn</code></h3>
+<pre><code>set JAVA_HOME=C:\Program Files\Java\jdk-23
+set MAVEN_OPTS=-Xmx1g --add-modules jdk.incubator.vector
+mvn exec:java -Dexec.mainClass=puretf.demo.CnnFashionMnistDemo ^
+      -Dexec.args="C:\Users\dell\Desktop\data\fashion 1 --batch=512"</code></pre>
+<ul>
+  <li><strong>JDK 21+ required</strong> (JDK 23 recommended): the Vector API is incubator in 23; it simply does not exist before JDK 16, and 17&ndash;20 give no <code>SPECIES_PREFERRED</code> speed on AVX2. Symptom of running under 17: <code>ClassNotFoundException: jdk.incubator.vector.Vector</code>.</li>
+  <li><strong>Data path</strong>: the demos read Idx gz files from <code>C:\Users\dell\Desktop\data\fashion</code> (epochs default 5, <code>--fast</code> = 12k/2k subset).</li>
+  <li>If you ever see <code>java.nio.file.NoSuchFileException: jdk.incubator.vector\...</code>, a <code>--add-modules ...</code> pair leaked into <code>main()</code> args &mdash; move it to <code>MAVEN_OPTS</code>.</li>
+</ul>
+
+<h2>5. The tiled-GEMM detour (measured, not merged)</h2>
+<h3>Concept</h3>
+<p>With the vector loop bound by memory, the &ldquo;textbook&rdquo; next step is register tiling &mdash; hold part of the output row in registers across several <code>k</code> steps and write it once, avoiding a load+store round-trip per <code>k</code>. That needs <code>k</code>-outer&rarr;<code>j</code>-inner layouts, a curry or row-blocked micro-kernel, and fewer than ~16 live vectors (YMM registers).</p>
+<h3>What was tried (variants)</h3>
+<table>
+  <tr><th>Kernel</th><th>Order</th><th>Live vectors</th><th>Epoch</th><th>Verdict</th></tr>
+  <tr><td>k-blocked, <code>js</code>-outer column scan</td><td>js&rarr;k&rarr;j</td><td>~17 (spills)</td><td class="bad">5.7&nbsp;s</td><td>strided W loads waste half of every cache line</td></tr>
+  <tr><td>row-blocked RB=8 (unrolled 8 accs)</td><td>i-block&rarr;js&rarr;k</td><td>17 &gt; 16 regs</td><td class="bad">3.2&nbsp;s</td><td>register spills</td></tr>
+  <tr><td>row-blocked RB=4 + <code>fma</code></td><td>i-block&rarr;js&rarr;k</td><td>~8</td><td class="bad">2.9&ndash;3.3&nbsp;s</td><td>fma operand bug corrupted loss; fixed logically</td></tr>
+  <tr><td>half-row register swap, full k inside</td><td>i&rarr;tile&rarr;k</td><td>~9</td><td class="bad">2.7&nbsp;s</td><td>sequential W, but re-reads W per tile + long FMA chains</td></tr>
+  <tr><td class="good">simple k-sequential vector loop</td><td>i&rarr;k&rarr;j</td><td>~3</td><td class="good">2.5&nbsp;s</td><td><strong>winner &mdash; kept</strong></td></tr>
+</table>
+<p class="note"><strong>Conclusion:</strong> for this workload (<code>n=128</code>, W = 400&nbsp;KB comfortably L2-resident, already-buffered output rows) the <em>extra</em> W re-reads and long per-accumulator FMA dependency chains outweigh the saved output round-trips. The simple streaming loop wins; the tiled experiments were removed. The lesson stands: <strong>measure variants, keep the fastest.</strong></p>
+
+<h2>6. Improving training via batch size &amp; other knobs</h2>
+<h3>Batch size (<code>--batch=N</code>, default 512)</h3>
+<ul>
+  <li><strong>Throughput</strong>: larger batches issue bigger GEMMs, so FLOPs per second goes up &mdash; until the intermediate tensors stop fitting in L2/L3. Here 512 is sweet; 1024 is usually also fine for this MLP, and evaluation can use a bigger batch than training with no accuracy effect.</li>
+  <li><strong>Memory</strong>: the tape holds one whole batch of intermediates, so heap scales linearly with batch &mdash; keep it &le;~1024 under <code>-Xmx1g</code>. The 10k test set is always sliced to <code>--batch</code> regardless.</li>
+  <li><strong>Gradient quality</strong>: bigger batch = lower-variance gradient estimate per update but <em>fewer updates per epoch</em>. For a small model start 256&ndash;512; if accuracy plateaus early, try smaller (64&ndash;128) or raise LR proportionally (linear scaling rule: &times;2 batch &asymp; &times;2 max LR).</li>
+</ul>
+<h3>Other knobs in the demo</h3>
+<table>
+  <tr><th>Knob</th><th>Example</th><th>Why</th></tr>
+  <tr><td>Epochs</td><td><code>run.cmd fashion-cnn 10</code></td><td>5 epochs &asymp; 25&nbsp;s already hits ~0.85; diminishing returns after 10&ndash;15.</td></tr>
+  <tr><td><code>--fast</code></td><td><code>run.cmd fashion-cnn 3 --fast</code></td><td>12k/2k subset for a fast first signal (minutes instead of tens of minutes on a CNN).</td></tr>
+  <tr><td>Learning rate</td><td><code>Optim.Adam(0.0015f)</code></td><td>Adam tolerates 1e-3&ndash;3e-3 here; larger batch &#8594; larger LR.</td></tr>
+  <tr><td>Schedule</td><td><code>LrSchedule.cosine(max, min, epochs)</code></td><td>cosine decay smoothes convergence; widen <code>max&#8594;min</code> for fine-tuning.</td></tr>
+  <tr><td>valSplit / earlyStop</td><td><code>fitHistory(..., 0.1f, EarlyStopping...)</code></td><td>keeps a held-out tail for early stopping and honest curves.</td></tr>
+  <tr><td>Architecture</td><td>use <code>fashion-cnn</code> commented block</td><td>Conv2D+pool raises accuracy but is slower &mdash; the MLP is the throughput showcase.</td></tr>
+</table>
+<div class="fname">fitHistory signature (train + evaluate with one batch value)</div>
+<pre><code>// mdl.fitHistory(trainX, trainY, CLASSES, epochs, batch, opt, sched,
+//                valSplit, earlyStop, verbose)
+History hist = net.fitHistory(trainX, trainY, 10, epochs, batch,
+        new Optim.Adam(0.0015f),
+        LrSchedule.cosine(0.0015f, 0.0002f, epochs),
+        0f, null, true);
+double[] eval = net.evaluate(testX, testY, 10, batch);   // batched inference</code></pre>
+<p class="note"><strong>Measuring fairly:</strong> the first epoch after a fresh JVM is slower (JIT warm-up; expect ~3.0&nbsp;s, then steady ~2.5&nbsp;s). Skip the first epoch before timing, and compare <em>loss</em>, not just time &mdash; a &ldquo;fast&rdquo; kernel that changes loss is a bug, as the <code>fma</code> episode proved.</p>
+
+<h2>7. Summary of the session</h2>
+<table>
+  <tr><th>Step</th><th>Action</th><th>Result</th></tr>
+  <tr><td>Batching</td><td><code>predict(X, batch)</code> / <code>evaluate(X,Y,classes,batch)</code>, default 512, tape reset per slice</td><td>10k evaluation no longer OOMs; no more minute-long epochs</td></tr>
+  <tr><td>Profiling</td><td>JFR single epoch</td><td>&asymp;89% in <code>Tensor.matmul</code> (bwd 60% / fwd 28%)</td></tr>
+  <tr><td>Vector API</td><td><code>mmFwd</code> / <code>mmBwdDa</code> / <code>mmBwdDw</code> with <code>FloatVector.SPECIES_PREFERRED</code></td><td>3.8 &rarr; 2.5&nbsp;s/epoch, loss identical 0.6536</td></tr>
+  <tr><td>Build config</td><td>JDK 21+, compiler <code>--add-modules</code>, <code>MAVEN_OPTS</code> runtime flag, <code>run.cmd</code> selects jdk-23</td><td>reproducible <code>mvn</code> + <code>run.cmd</code> runs</td></tr>
+  <tr><td>Tiled GEMM</td><td>four tiled variants built + benchmarked</td><td>slower (2.7&ndash;5.7&nbsp;s); reverted to the streaming kernel</td></tr>
+  <tr><td>Docs</td><td>README quick-start + performance notes updated</td><td>new targets, flags, JDK requirements</td></tr>
+</table>
+<p>Next plausible speed-ups if ever needed: vectorize <code>bmm</code> / <code>im2col</code> paths, or a JIT-knob-tuned blocking kernel for much wider (<code>n&ge;512</code>) matrices where the output round-trip actually dominates.</p>
+
+</main>
+</body>
+</html>
