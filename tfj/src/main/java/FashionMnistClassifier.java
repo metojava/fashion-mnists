@@ -20,7 +20,7 @@ import java.util.Arrays;
 
 public class FashionMnistClassifier {
 
-    private static final String DATA_DIR = "data/fashion/";
+    private static final String DATA_DIR = FashionMnistDownloader.DEFAULT_DIRECTORY + "/";
     private static final int IMAGE_SIZE = 28;
     private static final int NUM_CLASSES = 10;
     
@@ -31,6 +31,7 @@ public class FashionMnistClassifier {
     };
 
     public static void main(String[] args) throws Exception {
+        FashionMnistDownloader.ensureAvailable(DATA_DIR, false);
         System.out.println("=================================================================");
         System.out.println("   TensorFlow Java Engine: Initializing Fashion MNIST Pipeline   ");
         System.out.println("=================================================================");

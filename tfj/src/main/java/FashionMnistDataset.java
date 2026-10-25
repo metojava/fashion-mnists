@@ -47,7 +47,7 @@ public class FashionMnistDataset {
     private static byte[] readGzipFile(String path) throws IOException {
         File file = new File(path);
         if (!file.exists()) {
-            throw new FileNotFoundException("Missing dataset asset: " + file.getAbsolutePath());
+            FashionMnistDownloader.ensureAvailable(file.getAbsoluteFile().getParent(), false);
         }
         try (GZIPInputStream gis = new GZIPInputStream(new FileInputStream(file));
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
