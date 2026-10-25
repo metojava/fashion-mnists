@@ -29,7 +29,7 @@ master has more content
 ## Quick start
 
 ```
-run.cmd                            # XOR + regression demos
+run.cmd                            # Fashion-MNIST classifier
 run.cmd gradcheck                  # finite-difference verification of every op
 run.cmd features                   # integration smoke test (MLP / attention / LSTM / CNN)
 run.cmd fashion [5]                # Fashion-MNIST MLP (784-256-10)
@@ -58,21 +58,27 @@ Supported flags across the demos:
 | `--batch=N` | set the mini-batch size for training **and** inference |
 | `--show` | open the per-class prediction grid in a Swing window |
 
-Requirements: JDK **21+** (JDK 23 recommended), Maven. Nothing else.
+Requirements: JDK **17+** and Maven on PATH. Run commands from this project folder.
 
-The vectorized `matmul` uses the HotSpot Vector API (`jdk.incubator.vector`).
-`run.cmd` handles it automatically: it selects `C:\Program Files\Java\jdk-23`
-when present and exports `MAVEN_OPTS=-Xmx4g --add-modules jdk.incubator.vector`
-(same JVM as `exec:java`, so JVM flags must come from `MAVEN_OPTS`, not
-`exec-maven-plugin` `<arguments>` â€” those are program args to `main()`).
+The project enables the Vector API and a 4 GB heap through `.mvn/jvm.config`.
+Compile once after checkout or source changes:
 
-To run `mvn exec:java` directly (equivalent of `run.cmd fashion-cnn 1 --fast --batch=256`):
-
+```powershell
+mvn compile exec:java
 ```
-set JAVA_HOME=C:\Program Files\Java\jdk-23
-set MAVEN_OPTS=-Xmx4g --add-modules jdk.incubator.vector
-mvn -q compile "-Dexec.mainClass=puretf.demo.CnnFashionMnistDemo" exec:java "-Dexec.args=C:\Users\dell\Desktop\data\fashion 1 --fast --batch=256"
+
+After compilation, `mvn exec:java` runs the default Fashion-MNIST classifier.
+For a quick one-epoch run:
+
+```powershell
+mvn compile exec:java "-Dexec.args=1 --fast --batch=256"
 ```
+
+Missing datasets download automatically from the official Fashion-MNIST repository
+into `data/fashion-mnist/` in this project. Completed files are reused on later runs.
+All demos also accept an explicit dataset directory as a positional argument.
+The model loader only downloads the two test files. Downloads use temporary files
+and validate gzip/IDX contents before saving the completed file.
 
 ## Evaluation & image grids
 

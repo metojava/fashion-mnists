@@ -4,6 +4,7 @@ import puretf.Optim;
 import puretf.chart.EvalCharts;
 import puretf.chart.TrainingCurves;
 import puretf.data.IdxDataset;
+import puretf.data.FashionMnist;
 import puretf.nn.*;
 
 /**
@@ -27,7 +28,7 @@ public final class CnnFashionMnistDemo {
     };
 
     public static void main(String[] args) throws Exception {
-        String dir = "C:\\Users\\dell\\Desktop\\data\\fashion";
+        String dir = FashionMnist.DEFAULT_DIRECTORY;
         int epochs = 5;
         boolean fast = false;
         int batch = 512;
@@ -41,11 +42,13 @@ public final class CnnFashionMnistDemo {
             } else dir = a;
         }
 
+        if (epochs <= 0 || batch <= 0) throw new IllegalArgumentException("epochs and batch must be positive");
+        FashionMnist.ensureAvailable(dir, false);
         long t0 = System.currentTimeMillis();
-        var trI = IdxDataset.loadImages(dir + "\\train-images-idx3-ubyte.gz");
-        var trL = IdxDataset.loadLabels(dir + "\\train-labels-idx1-ubyte.gz");
-        var teI = IdxDataset.loadImages(dir + "\\t10k-images-idx3-ubyte.gz");
-        var teL = IdxDataset.loadLabels(dir + "\\t10k-labels-idx1-ubyte.gz");
+        var trI = IdxDataset.loadImages(java.nio.file.Path.of(dir, "train-images-idx3-ubyte.gz").toString());
+        var trL = IdxDataset.loadLabels(java.nio.file.Path.of(dir, "train-labels-idx1-ubyte.gz").toString());
+        var teI = IdxDataset.loadImages(java.nio.file.Path.of(dir, "t10k-images-idx3-ubyte.gz").toString());
+        var teL = IdxDataset.loadLabels(java.nio.file.Path.of(dir, "t10k-labels-idx1-ubyte.gz").toString());
 
         float[][] trainX = trI.pixels();
         int[] trainY = trL.labels();

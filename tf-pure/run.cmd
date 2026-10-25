@@ -1,7 +1,7 @@
 @echo off
 rem Pure-Java autograd demos. No TensorFlow DLL required.
 rem Usage:
-rem   run.cmd                        -> XOR + regression demos (puretf.demo.Demo)
+rem   run.cmd                        -> Fashion-MNIST classifier
 rem   run.cmd fashion [epochs=5]     -> Fashion-MNIST MLP classifier
 rem   run.cmd fashion-cnn [epochs=5] -> Fashion-MNIST CNN (--fast subset, --batch=N)
 rem   run.cmd load-model [model]     -> evaluate a saved PTF1 model on Fashion-MNIST test set
@@ -9,7 +9,7 @@ rem   run.cmd full [epochs=5] [--fast] [--show] -> train CNN, then evaluate the 
 rem   run.cmd gradcheck              -> finite-difference gradient verification
 rem   run.cmd features               -> integration smoke test (all layer stacks)
 setlocal
-if exist "C:\Program Files\Java\jdk-23" set "JAVA_HOME=C:\Program Files\Java\jdk-23"
+rem Use the caller's JAVA_HOME (JDK 17 or newer).
 set "MAVEN_OPTS=-Xmx4g --add-modules jdk.incubator.vector"
 cd /d "%~dp0"
 
@@ -27,7 +27,7 @@ goto :eof
 shift
 set "EPOCHS=%~1"
 if "%EPOCHS%"=="" set EPOCHS=5
-mvn -q compile "-Dexec.mainClass=puretf.demo.FashionMnistDemo" exec:java "-Dexec.args=C:\Users\dell\Desktop\data\fashion %EPOCHS%"
+mvn -q compile "-Dexec.mainClass=puretf.demo.FashionMnistDemo" exec:java "-Dexec.args=data/fashion-mnist %EPOCHS%"
 goto :eof
 
 :fashioncnn
@@ -44,7 +44,7 @@ set "REST=%REST% %A%"
 shift
 goto fashioncnn_loop
 :fashioncnn_run
-if "%REST%"=="" (set "ARGS=C:\Users\dell\Desktop\data\fashion 5") else (set "ARGS=C:\Users\dell\Desktop\data\fashion%REST%")
+if "%REST%"=="" (set "ARGS=data/fashion-mnist 5") else (set "ARGS=data/fashion-mnist%REST%")
 mvn -q compile "-Dexec.mainClass=puretf.demo.CnnFashionMnistDemo" exec:java "-Dexec.args=%ARGS%"
 goto :eof
 
@@ -62,7 +62,7 @@ set "ARGS=%ARGS% %A%"
 shift
 goto loadmodel_loop
 :loadmodel_run
-if "%ARGS%"=="" set "ARGS=target\fashion-cnn.bin C:\Users\dell\Desktop\data\fashion"
+if "%ARGS%"=="" set "ARGS=target\fashion-cnn.bin data/fashion-mnist"
 mvn -q compile "-Dexec.mainClass=puretf.demo.ModelLoaderDemo" exec:java "-Dexec.args=%ARGS%"
 goto :eof
 
@@ -87,9 +87,9 @@ if /i "%A%"=="--show" (
 shift
 goto full_loop
 :full_run
-mvn -q compile "-Dexec.mainClass=puretf.demo.CnnFashionMnistDemo" exec:java "-Dexec.args=C:\Users\dell\Desktop\data\fashion%CNN_ARGS%"
+mvn -q compile "-Dexec.mainClass=puretf.demo.CnnFashionMnistDemo" exec:java "-Dexec.args=data/fashion-mnist%CNN_ARGS%"
 if errorlevel 1 goto :eof
-mvn -q compile "-Dexec.mainClass=puretf.demo.ModelLoaderDemo" exec:java "-Dexec.args=target\fashion-cnn.bin C:\Users\dell\Desktop\data\fashion%EVAL_ARGS%"
+mvn -q compile "-Dexec.mainClass=puretf.demo.ModelLoaderDemo" exec:java "-Dexec.args=target\fashion-cnn.bin data/fashion-mnist%EVAL_ARGS%"
 goto :eof
 
 :gradcheck

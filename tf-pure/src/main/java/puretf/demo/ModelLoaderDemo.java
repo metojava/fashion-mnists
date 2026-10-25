@@ -1,6 +1,7 @@
 package puretf.demo;
 
 import puretf.data.IdxDataset;
+import puretf.data.FashionMnist;
 import puretf.nn.Metrics;
 import puretf.nn.Sequential;
 
@@ -13,7 +14,7 @@ import java.nio.file.Path;
  *
  * Usage: main [modelPath] [dataDir] [--show]
  *   modelPath default: target\fashion-cnn.bin
- *   dataDir   default: C:\Users\dell\Desktop\data\fashion
+ *   dataDir   default: data/fashion-mnist
  */
 public final class ModelLoaderDemo {
 
@@ -24,7 +25,7 @@ public final class ModelLoaderDemo {
 
     public static void main(String[] args) throws Exception {
         String modelPath = "target\\fashion-cnn.bin";
-        String dir = "C:\\Users\\dell\\Desktop\\data\\fashion";
+        String dir = FashionMnist.DEFAULT_DIRECTORY;
         boolean show = false;
         int batch = 512;
         for (String a : args) {
@@ -42,8 +43,9 @@ public final class ModelLoaderDemo {
         System.out.printf("loaded model %s (%.1fs)%n", modelPath,
                 (System.currentTimeMillis() - t0) / 1000.0);
 
-        var teI = IdxDataset.loadImages(dir + "\\t10k-images-idx3-ubyte.gz");
-        var teL = IdxDataset.loadLabels(dir + "\\t10k-labels-idx1-ubyte.gz");
+        FashionMnist.ensureAvailable(dir, true);
+        var teI = IdxDataset.loadImages(java.nio.file.Path.of(dir, "t10k-images-idx3-ubyte.gz").toString());
+        var teL = IdxDataset.loadLabels(java.nio.file.Path.of(dir, "t10k-labels-idx1-ubyte.gz").toString());
         float[][] testX = teI.pixels();
         int[] testY = teL.labels();
         System.out.printf("loaded %d test %dx%d images (%.1fs)%n",

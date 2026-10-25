@@ -2,6 +2,7 @@ package puretf.demo;
 
 import puretf.Tensor;
 import puretf.data.IdxDataset;
+import puretf.data.FashionMnist;
 import puretf.nn.Dense;
 import puretf.nn.Dropout;
 import puretf.nn.History;
@@ -13,7 +14,7 @@ import puretf.nn.Sequential;
  * pure-Java engine. MLP: 784 -> 256 (tanh) -> dropout -> 10 logits,
  * trained with fused softmax cross-entropy + Adam.
  *
- * Usage: main [dataDir] [epochs]   (defaults: Desktop data dir, 20 epochs)
+ * Usage: main [dataDir] [epochs]   (defaults: data/fashion-mnist, 5 epochs)
  */
 public final class FashionMnistDemo {
 
@@ -23,7 +24,7 @@ public final class FashionMnistDemo {
     };
 
     public static void main(String[] args) throws Exception {
-        String dir = "C:\\Users\\dell\\Desktop\\data\\fashion";
+        String dir = FashionMnist.DEFAULT_DIRECTORY;
         int epochs = 5;
         int batch = 256;
         boolean showChart = false;
@@ -34,11 +35,13 @@ public final class FashionMnistDemo {
             else dir = a;
         }
 
+        if (epochs <= 0 || batch <= 0) throw new IllegalArgumentException("epochs and batch must be positive");
+        FashionMnist.ensureAvailable(dir, false);
         long t0 = System.currentTimeMillis();
-        var trI = IdxDataset.loadImages(dir + "\\train-images-idx3-ubyte.gz");
-        var trL = IdxDataset.loadLabels(dir + "\\train-labels-idx1-ubyte.gz");
-        var teI = IdxDataset.loadImages(dir + "\\t10k-images-idx3-ubyte.gz");
-        var teL = IdxDataset.loadLabels(dir + "\\t10k-labels-idx1-ubyte.gz");
+        var trI = IdxDataset.loadImages(java.nio.file.Path.of(dir, "train-images-idx3-ubyte.gz").toString());
+        var trL = IdxDataset.loadLabels(java.nio.file.Path.of(dir, "train-labels-idx1-ubyte.gz").toString());
+        var teI = IdxDataset.loadImages(java.nio.file.Path.of(dir, "t10k-images-idx3-ubyte.gz").toString());
+        var teL = IdxDataset.loadLabels(java.nio.file.Path.of(dir, "t10k-labels-idx1-ubyte.gz").toString());
         System.out.printf("loaded %d train / %d test %dx%d images (%.1fs)%n",
                 trI.count(), teI.count(), trI.rows(), trI.cols(),
                 (System.currentTimeMillis() - t0) / 1000.0);
