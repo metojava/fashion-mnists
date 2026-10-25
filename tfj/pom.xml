@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://apache.org"
+         xmlns:xsi="http://w3.org"
+         xsi:schemaLocation="http://apache.org http://apache.org">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>fashion-mnist-classifier</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <tensorflow.version>0.5.0</tensorflow.version>
+    </properties>
+
+    <dependencies>
+        <!-- Core TensorFlow Java API -->
+    <dependency>
+        <groupId>org.tensorflow</groupId>
+        <artifactId>tensorflow-core-api</artifactId>
+        <version>0.5.0</version>
+    </dependency>
+    <!-- Native Platform Binaries -->
+    <dependency>
+        <groupId>org.tensorflow</groupId>
+        <artifactId>tensorflow-core-platform</artifactId>
+        <version>0.5.0</version>
+    </dependency>
+    <!-- Keras-style framework layer utilities -->
+    <dependency>
+        <groupId>org.tensorflow</groupId>
+        <artifactId>tensorflow-framework</artifactId>
+        <version>0.5.0</version>
+    </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Standard Java Compiler Plugin -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.10.1</version>
+                <configuration>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
+                </configuration>
+            </plugin>
+
+            <!-- Exec Maven Plugin to launch your application -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <!-- Points to your specific class with the main method -->
+                    <mainClass>FashionMnistClassifiere</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

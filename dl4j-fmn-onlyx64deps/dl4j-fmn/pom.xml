@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://apache.org"
+         xmlns:xsi="http://w3.org"
+         xsi:schemaLocation="http://apache.org http://apache.org">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>dl4j-fashion-mnist</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <dl4j.version>1.0.0-M2.1</dl4j.version>
+        <mainClass>com.example.FashionMnistApp</mainClass>
+    </properties>
+
+    <dependencies>
+        <!-- DL4J neural network framework (minimal: nn only; avoids datavec/opencv/ffmpeg/modelimport pulls) -->
+        <dependency>
+            <groupId>org.deeplearning4j</groupId>
+            <artifactId>deeplearning4j-nn</artifactId>
+            <version>${dl4j.version}</version>
+        </dependency>
+
+        <!-- Nd4j backend: Runs calculations natively on your CPU.
+             Only the Windows x86_64 native binaries are pulled in. -->
+        <dependency>
+            <groupId>org.nd4j</groupId>
+            <artifactId>nd4j-native</artifactId>
+            <version>${dl4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.nd4j</groupId>
+            <artifactId>nd4j-native</artifactId>
+            <version>${dl4j.version}</version>
+            <classifier>windows-x86_64</classifier>
+        </dependency>
+
+        <!-- Logging backend required by DL4J (prevents SLF4J warnings) -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.4.14</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Compiler plugin configured for Java 11+ -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
+                </configuration>
+            </plugin>
+
+            <!-- Exec Maven Plugin to run the application -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <mainClass>${mainClass}</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Run: mvn compile exec:java -Pdigits -->
+        <profile>
+            <id>digits</id>
+            <properties>
+                <mainClass>com.example.MnistDigitApp</mainClass>
+            </properties>
+        </profile>
+    </profiles>
+</project>
